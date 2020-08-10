@@ -9,6 +9,7 @@
 	json_struct_to_tx/1,
 	etf_to_wallet_chunk_response/1,
 	wallet_list_to_json_struct/3,
+	wallet_to_json_struct/1,
 	json_struct_to_wallet_list/1,
 	block_index_to_json_struct/1,
 	json_struct_to_block_index/1,

@@ -1592,11 +1592,31 @@ process_get_wallet_list_chunk(EncodedRootHash, EncodedCursor, Req) ->
 			Node = whereis(http_entrypoint_node),
 			case ar_node:get_wallet_list_chunk(Node, RootHash, Cursor) of
 				{ok, {NextCursor, Wallets}} ->
-					Reply = term_to_binary(#{ next_cursor => NextCursor, wallets => Wallets }),
+					SerializeFn = case cowboy_req:header(<<"content-type">>, Req) of
+						<<"application/json">> -> fun wallet_list_chunk_to_json/1;
+						<<"application/etf">> -> fun erlang:term_to_binary/1;
+						_ -> fun erlang:term_to_binary/1
+					end,
+					Reply = SerializeFn(#{ next_cursor => NextCursor, wallets => Wallets }),
 					{200, #{}, Reply, Req};
 				{error, root_hash_not_found} ->
 					{404, #{}, <<"Root hash not found.">>, Req}
 			end
+	end.
+
+wallet_list_chunk_to_json(#{ next_cursor := NextCursor, wallets := Wallets }) ->
+	SerializedWallets =
+		lists:map(
+			fun({Addr, {Balance, LastTX}}) ->
+				ar_serialize:wallet_to_json_struct({Addr, Balance, LastTX})
+			end,
+			Wallets
+		),
+	case NextCursor of
+		last ->
+			jiffy:encode(#{ wallets => SerializedWallets });
+		Cursor when is_binary(Cursor) ->
+			jiffy:encode(#{ next_cursor => ar_util:encode(Cursor), wallets => SerializedWallets })
 	end.
 
 validate_get_block_type_id(<<"height">>, ID) ->
