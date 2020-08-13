@@ -82,6 +82,10 @@ set_current(PrevRootHash, RootHash, RewardAddr, Height) when is_binary(RootHash)
 %%% Generic server callbacks.
 %%%===================================================================
 
+init([{recent_block_index, []}, {peers, _Peers}]) ->
+	process_flag(trap_exit, true),
+	DAG = ar_diff_dag:new(<<>>, ar_patricia_tree:new(), {0, not_set}),
+	{ok, DAG};
 init([{recent_block_index, RecentBlockIndex}, {peers, Peers}]) ->
 	{LastDAG, LastB, PrevWalletList} = lists:foldl(
 		fun ({BH, _, _}, start) ->
