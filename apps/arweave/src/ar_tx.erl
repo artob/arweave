@@ -1,18 +1,23 @@
 -module(ar_tx).
 
--export([new/0, new/1, new/2, new/3, new/4]).
--export([sign/2, sign/3, verify/5, verify/6]).
--export([sign_v1/2, sign_v1/3]).
--export([tx_to_binary/1, tags_to_list/1]).
--export([calculate_min_tx_cost/4, calculate_min_tx_cost/6, check_last_tx/2]).
--export([generate_chunk_tree/1, generate_chunk_tree/2, generate_chunk_id/1]).
--export([chunk_binary/2]).
--export([chunks_to_size_tagged_chunks/1, sized_chunks_to_sized_chunk_ids/1]).
--export([verify_tx_id/2]).
--export([tx_cost_above_min/6]).
--export([get_addresses/1]).
+-export([
+	new/0, new/1, new/2, new/3, new/4,
+	sign/2, sign/3, verify/5, verify/6,
+	sign_v1/2, sign_v1/3,
+	tx_to_binary/1, tags_to_list/1,
+	calculate_min_tx_cost/4, calculate_min_tx_cost/6, check_last_tx/2,
+	generate_chunk_tree/1, generate_chunk_tree/2, generate_chunk_id/1,
+	chunk_binary/2,
+	chunks_to_size_tagged_chunks/1, sized_chunks_to_sized_chunk_ids/1,
+	verify_tx_id/2,
+	tx_cost_above_min/6,
+	get_addresses/1
+]).
+
+-export([calculate_wallet_fee/2]).
 
 -include("ar.hrl").
+-include("perpetual_storage.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 %%% Transaction creation, signing and verification for Arweave.
@@ -270,9 +275,23 @@ calculate_min_tx_cost(DataSize, Diff, Height, _, <<>>, Timestamp) ->
 calculate_min_tx_cost(DataSize, Diff, Height, Wallets, Addr, Timestamp) ->
 	case maps:get(Addr, Wallets, not_found) of
 		not_found ->
-			calculate_min_tx_cost(DataSize, Diff, Height, Timestamp) + ?WALLET_GEN_FEE;
+			WalletFee = calculate_wallet_fee(Diff, Height),
+			calculate_min_tx_cost(DataSize, Diff, Height, Timestamp) + WalletFee;
 		{_Balance, _LastTX} ->
 			calculate_min_tx_cost(DataSize, Diff, Height, Timestamp)
+	end.
+
+calculate_wallet_fee(Diff, Height) ->
+	case Height >= ar_fork:height_2_2() of
+		true ->
+			%% Scale the wallet fee so that is is always roughly 0.25$.
+			ar_tx_perpetual_storage:usd_to_ar(
+				?WALLET_GEN_FEE / ?WINSTON_PER_AR * ?INITIAL_USD_PER_AR(Height)(),
+				Diff,
+				Height
+			);
+		false ->
+			?WALLET_GEN_FEE
 	end.
 
 min_tx_cost(DataSize, Diff, DiffCenter) when Diff >= DiffCenter ->
@@ -556,7 +575,7 @@ tx_cost_test() ->
 		calculate_min_tx_cost(Size, Diff, Height, WalletList, Addr1, Timestamp)
 	),
 	?assertEqual(
-		calculate_min_tx_cost(Size, Diff, Height, Timestamp) + ?WALLET_GEN_FEE,
+		calculate_min_tx_cost(Size, Diff, Height, Timestamp) + calculate_wallet_fee(Diff, Height),
 		calculate_min_tx_cost(Size, Diff, Height, WalletList, Addr2, Timestamp)
 	).
 
