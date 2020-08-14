@@ -834,10 +834,36 @@ store_and_retrieve_wallet_list_test() ->
 		ar_patricia_tree:from_proplist([{A, {B, T}} || {A, B, T} <- ar_util:genesis_wallets()]),
 	{WalletListHash, _} = ar_block:hash_wallet_list(Height, RewardAddr, ExpectedWL),
 	{ok, ActualWL} = read_wallet_list(WalletListHash),
+	assert_wallet_trees_equal(ExpectedWL, ActualWL).
+
+assert_wallet_trees_equal(Expected, Actual) ->
 	?assertEqual(
-		ar_patricia_tree:foldr(fun(K, V, Acc) -> [{K, V} | Acc] end, [], ExpectedWL),
-		ar_patricia_tree:foldr(fun(K, V, Acc) -> [{K, V} | Acc] end, [], ActualWL)
+		ar_patricia_tree:foldr(fun(K, V, Acc) -> [{K, V} | Acc] end, [], Expected),
+		ar_patricia_tree:foldr(fun(K, V, Acc) -> [{K, V} | Acc] end, [], Actual)
 	).
+
+read_wallet_list_chunks_test() ->
+	TestCases = [
+		[],
+		[random_wallet()], % < chunk size
+		[random_wallet() || _ <- lists:seq(1, ?WALLET_LIST_CHUNK_SIZE)], % == chunk size
+		[random_wallet() || _ <- lists:seq(1, ?WALLET_LIST_CHUNK_SIZE + 1)], % > chunk size
+		[random_wallet() || _ <- lists:seq(1, 10 * ?WALLET_LIST_CHUNK_SIZE)],
+		[random_wallet() || _ <- lists:seq(1, 10 * ?WALLET_LIST_CHUNK_SIZE + 1)]
+	],
+	lists:foreach(
+		fun(TestCase) ->
+			Tree = ar_patricia_tree:from_proplist(TestCase),
+			{RootHash, _} = ar_block:hash_wallet_list(ar_fork:height_2_2(), unclaimed, Tree),
+			ar_storage:write_wallet_list(RootHash, Tree),
+			{ok, ReadTree} = ar_storage:read_wallet_list(RootHash),
+			assert_wallet_trees_equal(Tree, ReadTree)
+		end,
+		TestCases
+	).
+
+random_wallet() ->
+	{crypto:strong_rand_bytes(32), {rand:uniform(1000000000), crypto:strong_rand_bytes(32)}}.
 
 handle_corrupted_wallet_list_test() ->
 	H = crypto:strong_rand_bytes(32),
