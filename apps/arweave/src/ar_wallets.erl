@@ -201,7 +201,20 @@ handle_call({update_wallets, RootHash, Wallets, RewardAddr, Height}, _From, DAG)
 	end.
 
 handle_cast({set_current, PrevRootHash, RootHash, RewardAddr, Height}, DAG) ->
-	{noreply, set_current(DAG, PrevRootHash, RootHash, RewardAddr, Height)}.
+	{noreply, set_current(DAG, PrevRootHash, RootHash, RewardAddr, Height)};
+
+handle_cast({write_wallet_list_chunk, RootHash, Cursor, Position}, DAG) ->
+	Tree = ar_diff_dag:reconstruct(DAG, RootHash, fun apply_diff/2),
+	case ar_storage:write_wallet_list_chunk(RootHash, Tree, Cursor, Position) of
+		{ok, NextCursor, NextPosition} ->
+			Cast = {write_wallet_list_chunk, RootHash, NextCursor, NextPosition},
+			gen_server:cast(self(), Cast);
+		{ok, complete} ->
+			ok;
+		{error, _Reason} ->
+			ok
+	end,
+	{noreply, DAG}.
 
 %%%===================================================================
 %%% Private functions.
@@ -273,14 +286,15 @@ set_current(DAG, PrevRootHash, RootHash, RewardAddr, Height) ->
 	Tree = ar_diff_dag:get_sink(UpdatedDAG),
 	case Height >= ar_fork:height_2_2() of
 		true ->
-			ok = ar_storage:write_wallet_list(RootHash, Tree);
+			gen_server:cast(self(), {write_wallet_list_chunk, RootHash, first, 0});
 		false ->
 			IsRewardAddrNew =
 				case PrevRootHash of
 					<<>> ->
 						false;
 					_ ->
-						PrevTree = ar_diff_dag:reconstruct(UpdatedDAG, PrevRootHash, fun apply_diff/2),
+						PrevTree =
+							ar_diff_dag:reconstruct(UpdatedDAG, PrevRootHash, fun apply_diff/2),
 						ar_patricia_tree:get(RewardAddr, PrevTree) == not_found
 				end,
 			ok = ar_storage:write_wallet_list(RootHash, RewardAddr, IsRewardAddrNew, Tree)

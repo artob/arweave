@@ -6,7 +6,7 @@
 	read_block/1, read_block/2,
 	invalidate_block/1, blocks_on_disk/0,
 	write_tx/1, write_tx_data/2, read_tx/1, read_tx_data/1,
-	read_wallet_list/1, write_wallet_list/4, write_wallet_list/2,
+	read_wallet_list/1, write_wallet_list/4, write_wallet_list/2, write_wallet_list_chunk/4,
 	write_block_index/1, read_block_index/0,
 	delete_tx/1,
 	enough_space/1, select_drive/2,
@@ -439,11 +439,19 @@ write_block_index(BI) ->
 	end.
 
 write_wallet_list(RootHash, Tree) ->
-	write_wallet_chunk(RootHash, Tree, first, 0).
+	write_wallet_list_chunks(RootHash, Tree, first, 0).
 
-write_wallet_chunk(_RootHash, _Tree, last, _Position) ->
-	ok;
-write_wallet_chunk(RootHash, Tree, Cursor, Position) ->
+write_wallet_list_chunks(RootHash, Tree, Cursor, Position) ->
+	case write_wallet_list_chunk(RootHash, Tree, Cursor, Position) of
+		{ok, complete} ->
+			ok;
+		{ok, NextCursor, NextPosition} ->
+			write_wallet_list_chunks(RootHash, Tree, NextCursor, NextPosition);
+		{error, _Reason} = Error ->
+			Error
+	end.
+
+write_wallet_list_chunk(RootHash, Tree, Cursor, Position) ->
 	Range =
 		case Cursor of
 			first ->
@@ -469,7 +477,12 @@ write_wallet_chunk(RootHash, Tree, Cursor, Position) ->
 	])),
 	case write_term(Name, Range2) of
 		ok ->
-			write_wallet_chunk(RootHash, Tree, NextCursor, NextPosition);
+			case NextCursor of
+				last ->
+					{ok, complete};
+				_ ->
+					{ok, NextCursor, NextPosition}
+			end;
 		{error, Reason} = Error ->
 			ar:err([
 				{event, failed_to_write_wallet_list_chunk},
@@ -855,7 +868,7 @@ read_wallet_list_chunks_test() ->
 		fun(TestCase) ->
 			Tree = ar_patricia_tree:from_proplist(TestCase),
 			{RootHash, _} = ar_block:hash_wallet_list(ar_fork:height_2_2(), unclaimed, Tree),
-			ar_storage:write_wallet_list(RootHash, Tree),
+			ok = write_wallet_list(RootHash, Tree),
 			{ok, ReadTree} = ar_storage:read_wallet_list(RootHash),
 			assert_wallet_trees_equal(Tree, ReadTree)
 		end,
