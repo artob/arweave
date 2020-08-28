@@ -3,7 +3,7 @@
 -include("ar.hrl").
 
 -export([
-	open/2,
+	open/1, open/2,
 	repair/1,
 	create_column_family/3,
 	close/1,
@@ -16,8 +16,14 @@
 	get_range/3,
 	delete/2,
 	delete_range/3,
-	destroy/1
+	destroy/1,
+	count/1
 ]).
+
+open(Name) ->
+	RocksDBDir = filename:join(ar_meta_db:get(data_dir), ?ROCKS_DB_DIR),
+	Filename = filename:join(RocksDBDir, Name),
+	rocksdb:open(Filename, [{create_if_missing, true}]).
 
 open(Name, CFDescriptors) ->
 	RocksDBDir = filename:join(ar_meta_db:get(data_dir), ?ROCKS_DB_DIR),
@@ -76,10 +82,14 @@ close(DB) ->
 	rocksdb:close(DB).
 
 put({DB, CF}, Key, Value) ->
-	rocksdb:put(DB, CF, Key, Value, []).
+	rocksdb:put(DB, CF, Key, Value, []);
+put(DB, Key, Value) ->
+	rocksdb:put(DB, Key, Value, []).
 
 get({DB, CF}, Key) ->
-	rocksdb:get(DB, CF, Key, []).
+	rocksdb:get(DB, CF, Key, []);
+get(DB, Key) ->
+	rocksdb:get(DB, Key, []).
 
 get_next({DB, CF}, OffsetBinary) ->
 	case rocksdb:iterator(DB, CF, []) of
@@ -171,6 +181,9 @@ destroy(Name) ->
 		false ->
 			ok
 	end.
+
+count(DB) ->
+	rocksdb:count(DB).
 
 %%%===================================================================
 %%% Private functions.

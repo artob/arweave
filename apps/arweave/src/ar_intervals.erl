@@ -10,7 +10,10 @@
 	get_interval_by_nth_inner_number/2,
 	to_etf/2,
 	to_json/2,
-	safe_from_etf/1
+	safe_from_etf/1,
+	is_empty/1,
+	largest/1,
+	take_largest/1
 ]).
 
 new() ->
@@ -59,6 +62,15 @@ safe_from_etf(Binary) ->
 		_ ->
 			{error, invalid}
 	end.
+
+is_empty(Intervals) ->
+	gb_sets:is_empty(Intervals).
+
+largest(Intervals) ->
+	gb_sets:largest(Intervals).
+
+take_largest(Intervals) ->
+	gb_sets:take_largest(Intervals).
 
 %%%===================================================================
 %%% Private functions.

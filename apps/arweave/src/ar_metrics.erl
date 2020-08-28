@@ -153,6 +153,13 @@ register() ->
 			"The time in seconds passed since a fork recovery process is launched until blocks "
 			"from the alternative fork are applied. If the process fails or the alternative fork "
 			"ends up less preferrable than the current one, this metric is not updated."}
+	]),
+	prometheus_gauge:new([
+		{name, synced_blocks},
+		{
+			help,
+			"The total number of synced block headers."
+		}
 	]).
 
 load_gauge(Name) ->

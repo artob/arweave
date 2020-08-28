@@ -15,7 +15,7 @@
 	get_tx_offset/1,
 	get_sync_record_etf/0,
 	get_sync_record_json/0,
-	add_historical_block/1
+	add_historical_block/2
 ]).
 
 -include("ar.hrl").
@@ -107,8 +107,8 @@ get_sync_record_etf() ->
 get_sync_record_json() ->
 	gen_server:call(?MODULE, get_sync_record_json).
 
-add_historical_block(BH) ->
-	gen_server:cast(?MODULE, {add_historical_block, BH}).
+add_historical_block(B, SizeTaggedTXs) ->
+	gen_server:cast(?MODULE, {add_historical_block, B, SizeTaggedTXs}).
 
 %%%===================================================================
 %%% Generic server callbacks.
@@ -330,36 +330,15 @@ handle_cast({maybe_drop_data_root_from_disk_pool, {DataRoot, TXSize, TXID}}, Sta
 		disk_pool_size = UpdatedDiskPoolSize
 	}};
 
-handle_cast({add_historical_block, BH}, State) ->
+handle_cast({add_historical_block, B, SizeTaggedTXs}, State) ->
 	#sync_data_state{
 		tx_index = TXIndex,
 		tx_offset_index = TXOffsetIndex
 	} = State,
-	case ar_storage:read_block(BH) of
-		unavailable ->
-			ar:err([
-				{event, ar_data_sync_did_not_find_block},
-				{block, ar_util:encode(BH)}
-			]),
-			{noreply, State};
-		B ->
-			BlockStartOffset = B#block.weave_size - B#block.block_size,
-			TXs = ar_storage:read_tx(B#block.txs),
-			case lists:any(fun(TX) -> TX == unavailable end, TXs) of
-				true ->
-					ar:err([
-						{event, ar_data_sync_did_not_find_block_txs},
-						{block, ar_util:encode(BH)}
-					]),
-					{noreply, State};
-				false ->
-					SizeTaggedTXs = ar_block:generate_size_tagged_list_from_txs(TXs),
-					{ok, _} = add_block_data_roots(State, SizeTaggedTXs, BlockStartOffset),
-					ok = update_tx_index(
-						TXIndex, TXOffsetIndex, SizeTaggedTXs, BlockStartOffset),
-					{noreply, State}
-			end
-	end;
+	BlockStartOffset = B#block.weave_size - B#block.block_size,
+	{ok, _} = add_block_data_roots(State, SizeTaggedTXs, BlockStartOffset),
+	ok = update_tx_index(TXIndex, TXOffsetIndex, SizeTaggedTXs, BlockStartOffset),
+	{noreply, State};
 
 handle_cast(update_peer_sync_records, State) ->
 	case whereis(http_bridge_node) of
@@ -709,22 +688,12 @@ handle_call(get_sync_record_json, _From, #sync_data_state{ sync_record = SyncRec
 	Limit = ?MAX_SHARED_SYNCED_INTERVALS_COUNT,
 	{reply, {ok, ar_intervals:to_json(SyncRecord, Limit)}, State}.
 
--ifdef(DEBUG).
-terminate(_Reason, State) ->
-	#sync_data_state{
-		chunks_index = {DB, _}
-	} = State,
-	ar_kv:close(DB),
-	ar_storage:delete_term(data_sync_state),
-	ar_kv:destroy("ar_data_sync_db").
--else.
 terminate(Reason, State) ->
 	ar:info([{event, ar_data_sync_terminate}, {reason, Reason}]),
 	#sync_data_state{
 		chunks_index = {DB, _}
 	} = State,
 	ar_kv:close(DB).
--endif.
 
 %%%===================================================================
 %%% Private functions.

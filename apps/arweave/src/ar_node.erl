@@ -13,6 +13,7 @@
 	get_current_diff/1, get_diff/1,
 	get_pending_txs/1, get_pending_txs/2, get_mined_txs/1, is_a_pending_tx/2,
 	get_current_block_hash/1,
+	get_tx_root/2,
 	is_joined/1,
 	get_block_txs_pairs/1,
 	mine/1, automine/1,
@@ -64,6 +65,7 @@ start(Peers, BI, MiningDelay, RewardAddr, AutoJoin, Diff, LastRetarget) ->
 								{recent_block_index, RecentBlockIndex},
 								{peers, Peers}
 							]),
+						{ok, _} = ar_header_sync_sup:start_link([{node, self()}]),
 						{B#block.reward_pool, B#block.weave_size, H, B#block.wallet_list}
 				end,
 			%% Start processes, init state, and start server.
@@ -194,6 +196,14 @@ get_current_block_hash(Node) ->
 	receive
 		{Ref, current_block_hash, not_joined} -> not_joined;
 		{Ref, current_block_hash, Current} -> Current
+	end.
+
+%% @doc Get transaction root for the given block hash.
+get_tx_root(Node, H) ->
+	Ref = make_ref(),
+	Node ! {get_tx_root, H, self(), Ref},
+	receive
+		{Ref, tx_root, Root} -> Root
 	end.
 
 %% @doc Return the current height of the blockweave.
@@ -435,7 +445,8 @@ handle({fork_recovered, BI, BlockTXPairs, BaseH, Timestamp}, WPid, State) ->
 			{ok, _} = ar_wallets:start_link([
 				{recent_block_index, lists:sublist(BI, ?STORE_BLOCKS_BEHIND_CURRENT)},
 				{peers, Peers}
-			]);
+			]),
+			{ok, _} = ar_header_sync_sup:start_link([{node, self()}]);
 		_ ->
 			do_nothing
 	end,
@@ -475,6 +486,10 @@ handle({is_in_block_index, H, From, Ref}, _WPid, #{ block_index := BI } = State)
 
 handle({get_current_block_hash, From, Ref}, _WPid, #{ current := H } = State) ->
 	From ! {Ref, current_block_hash, H},
+	State;
+
+handle({get_tx_root, H, From, Ref}, _WPid, #{ block_index := BI } = State) ->
+	From ! {Ref, tx_root, get_tx_root2(H, BI)},
 	State;
 
 handle({get_height, From, Ref}, _WPid, #{ height := Height } = State) ->
@@ -554,3 +569,10 @@ handle({get_mempool_size, From, Ref}, _WPid, #{ mempool_size := Size } = State) 
 handle(UnknownMsg, _WPid, State) ->
 	ar:warn([{event, ar_node_received_unknown_message}, {message, UnknownMsg}]),
 	State.
+
+get_tx_root2(H, [{H, _, TXRoot} | _]) ->
+	TXRoot;
+get_tx_root2(_H, []) ->
+	not_found;
+get_tx_root2(H, [_ | BI]) ->
+	get_tx_root2(H, BI).

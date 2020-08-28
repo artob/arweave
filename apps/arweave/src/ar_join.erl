@@ -73,21 +73,7 @@ do_join(Node, RawPeers, NewB, BI) ->
 			BlockTXPairs = get_block_and_trail(Peers, NewB, BI),
 			Node ! {fork_recovered, BI, BlockTXPairs, no_base_hash, no_timestamp},
 			join_peers(Peers),
-			ar_miner_log:joined(),
-			{Recent, Rest} =
-				lists:split(min(length(BI), ?DOWNLOAD_TOP_PRIORITY_BLOCKS_COUNT), BI),
-			lists:foreach(
-				fun({H, _, TXRoot}) ->
-					ar_header_sync:enqueue_front({block, {H, TXRoot}})
-				end,
-				lists:sort(fun(_, _) -> rand:uniform(2) == 1 end, Rest)
-			),
-			lists:foreach(
-				fun({H, _, TXRoot}) ->
-					ar_header_sync:enqueue_front({block, {H, TXRoot}})
-				end,
-				lists:reverse(Recent)
-			)
+			ar_miner_log:joined()
 	end.
 
 %% @doc Verify timestamps of peers.
