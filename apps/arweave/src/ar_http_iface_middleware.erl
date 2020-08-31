@@ -1445,12 +1445,7 @@ post_block(check_pow, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 						false;
 					true ->
 						SolutionHash = ar_mine:spora_solution_hash(RXHash, BShadow#block.poa),
-						case ar_mine:validate(SolutionHash, BShadow#block.diff, Height) of
-							false ->
-								false;
-							true ->
-								true
-						end
+						ar_mine:validate(SolutionHash, BShadow#block.diff, Height)
 				end;
 			false ->
 				case ar_mine:validate(BDS, Nonce, BShadow#block.diff, Height) of
