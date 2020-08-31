@@ -5,6 +5,7 @@
 -export([execute/2]).
 
 -include("ar.hrl").
+-include("ar_mine.hrl").
 -include("ar_data_sync.hrl").
 
 -define(HANDLER_TIMEOUT, 55000).
@@ -1374,7 +1375,7 @@ post_block(read_blockshadow, OrigPeer, {Req, Pid}, ReceiveTimestamp) ->
 			end
 	end;
 post_block(check_data_segment_processed, {ReqStruct, BShadow, OrigPeer}, Req, ReceiveTimestamp) ->
-	% Check if block is already known.
+	%% Check if block is already known.
 	case lists:keyfind(<<"block_data_segment">>, 1, ReqStruct) of
 		{_, BDSEncoded} ->
 			BDS = ar_util:decode(BDSEncoded),
@@ -1402,7 +1403,7 @@ post_block(check_indep_hash_processed, {BShadow, OrigPeer, BDS}, Req, ReceiveTim
 			post_block(check_is_joined, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp)
 	end;
 post_block(check_is_joined, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
-	% Check if node is joined.
+	%% Check if node is joined.
 	case ar_node:is_joined(whereis(http_entrypoint_node)) of
 		false ->
 			{503, #{}, <<"Not joined.">>, Req};
@@ -1420,7 +1421,7 @@ post_block(check_height, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 			post_block(check_difficulty, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp)
 	end;
 %% The min difficulty check is filtering out blocks from smaller networks, e.g.
-%% testnets. Therefor, we don't want to log when this check or any check above
+%% testnets. Therefore, we don't want to log when this check or any check above
 %% rejects the block because there are potentially a lot of rejections.
 post_block(check_difficulty, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 	case BShadow#block.diff >= ar_mine:min_difficulty(BShadow#block.height) of
@@ -1433,14 +1434,40 @@ post_block(check_difficulty, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 %% be after the PoW check to reduce the possibility of doing a DOS attack on
 %% the network.
 post_block(check_pow, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
-	case ar_mine:validate(BDS, BShadow#block.nonce, BShadow#block.diff, BShadow#block.height) of
-		{invalid, _} ->
+	Nonce = BShadow#block.nonce,
+	Height = BShadow#block.height,
+	MaybeValid =
+		case Height >= ar_fork:height_2_3() of
+			true ->
+				RXHash = ar_weave:hash(BDS, Nonce, Height),
+				case ar_mine:validate(RXHash, ?SPORA_SLOW_HASH_DIFF, Height) of
+					false ->
+						false;
+					true ->
+						SolutionHash = ar_mine:spora_solution_hash(RXHash, BShadow#block.poa),
+						case ar_mine:validate(SolutionHash, BShadow#block.diff, Height) of
+							false ->
+								false;
+							true ->
+								true
+						end
+				end;
+			false ->
+				case ar_mine:validate(BDS, Nonce, BShadow#block.diff, Height) of
+					{invalid, _} ->
+						false;
+					{valid, _} ->
+						true
+				end
+		end,
+	case MaybeValid of
+		true ->
+			ar_bridge:ignore_id(BDS),
+			post_block(check_timestamp, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp);
+		false ->
 			post_block_reject_warn(BShadow, check_pow, OrigPeer),
 			ar_blacklist_middleware:ban_peer(OrigPeer, ?BAD_POW_BAN_TIME),
-			{400, #{}, <<"Invalid Block Proof of Work">>, Req};
-		{valid, _} ->
-			ar_bridge:ignore_id(BDS),
-			post_block(check_timestamp, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp)
+			{400, #{}, <<"Invalid Block Proof of Work">>, Req}
 	end;
 post_block(check_timestamp, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 	%% Verify the timestamp of the block shadow.
@@ -1458,26 +1485,22 @@ post_block(check_timestamp, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 			post_block(post_block, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp)
 	end;
 post_block(post_block, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
-	%% The ar_block:generate_block_from_shadow/2 call is potentially slow. Since
-	%% all validation steps already passed, we can do the rest in a separate
-	spawn(fun() ->
-		ar:info([{
-			sending_external_block_to_bridge,
-			ar_util:encode(BShadow#block.indep_hash)
-		}]),
-		ar:info([
-			ar_http_iface_handler,
-			accepted_block,
-			{indep_hash, ar_util:encode(BShadow#block.indep_hash)}
-		]),
-		ar_bridge:add_block(
-			whereis(http_bridge_node),
-			OrigPeer,
-			BShadow,
-			BDS,
-			ReceiveTimestamp
-		)
-	end),
+	ar:info([{
+		sending_external_block_to_bridge,
+		ar_util:encode(BShadow#block.indep_hash)
+	}]),
+	ar:info([
+		ar_http_iface_handler,
+		accepted_block,
+		{indep_hash, ar_util:encode(BShadow#block.indep_hash)}
+	]),
+	ar_bridge:add_block(
+		whereis(http_bridge_node),
+		OrigPeer,
+		BShadow,
+		BDS,
+		ReceiveTimestamp
+	),
 	{200, #{}, <<"OK">>, Req}.
 
 post_block_reject_warn(BShadow, Step, Peer) ->

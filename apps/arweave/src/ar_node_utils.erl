@@ -260,6 +260,13 @@ validate_block(height, {BI, NewB, OldB, Wallets, BlockTXPairs}) ->
 		false ->
 			{invalid, invalid_height};
 		true ->
+			validate_block(weave_size, {BI, NewB, OldB, Wallets, BlockTXPairs})
+	end;
+validate_block(weave_size, {BI, #block{ txs = TXs } = NewB, OldB, Wallets, BlockTXPairs}) ->
+	case ar_block:verify_weave_size(NewB, OldB, TXs) of
+		false ->
+			{invalid, invalid_weave_size};
+		true ->
 			validate_block(previous_block, {BI, NewB, OldB, Wallets, BlockTXPairs})
 	end;
 validate_block(previous_block, {BI, NewB, OldB, Wallets, BlockTXPairs}) ->
@@ -267,7 +274,30 @@ validate_block(previous_block, {BI, NewB, OldB, Wallets, BlockTXPairs}) ->
 		false ->
 			{invalid, invalid_previous_block};
 		true ->
-			validate_block(poa, {BI, NewB, OldB, Wallets, BlockTXPairs})
+			case NewB#block.height >= ar_fork:height_2_3() of
+				true ->
+					validate_block(spora, {BI, NewB, OldB, Wallets, BlockTXPairs});
+				false ->
+					validate_block(poa, {BI, NewB, OldB, Wallets, BlockTXPairs})
+			end
+	end;
+validate_block(spora, {[{_, WeaveSize, _} | _] = BI, NewB, OldB, Wallets, BlockTXPairs}) ->
+	BDS = ar_block:generate_block_data_segment(NewB),
+	#block{
+		nonce = Nonce,
+		height = Height,
+		diff = Diff,
+		previous_block = PrevH,
+		poa = POA,
+		hash = Hash
+	} = NewB,
+	case ar_mine:validate_spora(BDS, Nonce, Height, Diff, PrevH, WeaveSize, POA, BI) of
+		false ->
+			{invalid, invalid_spora};
+		{true, Hash} ->
+			validate_block(difficulty, {BI, NewB, OldB, Wallets, BlockTXPairs});
+		{true, _} ->
+			{invalid, invalid_spora_hash}
 	end;
 validate_block(poa, {BI, NewB = #block{ poa = POA }, OldB, Wallets, BlockTXPairs}) ->
 	case ar_poa:validate(OldB#block.indep_hash, OldB#block.weave_size, BI, POA) of
@@ -281,7 +311,12 @@ validate_block(difficulty, {BI, NewB, OldB, Wallets, BlockTXPairs}) ->
 		false ->
 			{invalid, invalid_difficulty};
 		true ->
-			validate_block(pow, {BI, NewB, OldB, Wallets, BlockTXPairs})
+			case NewB#block.height >= ar_fork:height_2_3() of
+				false ->
+					validate_block(pow, {BI, NewB, OldB, Wallets, BlockTXPairs});
+				true ->
+					validate_block(independent_hash, {BI,  NewB, OldB, Wallets, BlockTXPairs})
+			end
 	end;
 validate_block(
 	pow,
@@ -355,13 +390,6 @@ validate_block(tx_root, {BI, NewB, OldB}) ->
 	case ar_block:verify_tx_root(NewB) of
 		false ->
 			{invalid, invalid_tx_root};
-		true ->
-			validate_block(weave_size, {BI, NewB, OldB})
-	end;
-validate_block(weave_size, {BI, #block{ txs = TXs } = NewB, OldB}) ->
-	case ar_block:verify_weave_size(NewB, OldB, TXs) of
-		false ->
-			{invalid, invalid_weave_size};
 		true ->
 			validate_block(block_index_root, {BI, NewB, OldB})
 	end;

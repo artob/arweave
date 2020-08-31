@@ -4,8 +4,9 @@
 
 -export([
 	generate/1,
-	validate/4,
-	modify_diff/2
+	validate/4, validate/3,
+	modify_diff/2,
+	get_spoa/3
 ]).
 
 -include("ar.hrl").
@@ -55,59 +56,65 @@ generate(_, 0, _, _, _) ->
 	#poa{};
 generate(Seed, WeaveSize, BI, Option, Limit) ->
 	RecallByte = calculate_challenge_byte(Seed, WeaveSize, Option),
-	{TXRoot, BlockBase, _BlockTop, RecallBH} = find_challenge_block(RecallByte, BI),
-	case ar_data_sync:get_chunk(RecallByte + 1) of
-		{ok, #{ tx_root := TXRoot, chunk := Chunk, tx_path := TXPath, data_path := DataPath }} ->
+	case get_spoa(RecallByte, BI, Option) of
+		not_found ->
+			generate(Seed, WeaveSize, BI, Option + 1, Limit);
+		SPoA ->
 			ar:info(
 				[
-					{event, generated_poa_from_v2_index},
+					{event, generated_poa},
 					{weave_size, WeaveSize},
 					{recall_byte, RecallByte},
 					{option, Option}
 				]
 			),
+			SPoA
+	end.
+
+get_spoa(RecallByte, BI, Option) ->
+	case ar_data_sync:get_chunk(RecallByte + 1) of
+		{ok, #{ tx_root := _TXRoot, chunk := Chunk, tx_path := TXPath, data_path := DataPath }} ->
 			#poa{ option = Option, chunk = Chunk, tx_path = TXPath, data_path = DataPath };
-		_ ->	
+		_ ->
+			{TXRoot, BlockBase, _BlockTop, RecallBH} = find_challenge_block(RecallByte, BI),
 			case ar_storage:read_block(RecallBH) of
 				unavailable ->
-					generate(Seed, WeaveSize, BI, Option + 1, Limit);
+					not_found;
 				B ->
-					generate(B, RecallByte - BlockBase, Seed, WeaveSize, BI, TXRoot, Option, Limit)
+					case B#block.txs of
+						[] ->
+							ar:err([
+								{event, empty_poa_challenge_block},
+								{hash, ar_util:encode(B#block.indep_hash)}
+							]),
+							not_found;
+						TXIDs ->
+							TXs = lists:foldr(
+								fun
+									(_TXID, unavailable) -> unavailable;
+									(TXID, Acc) ->
+										case ar_storage:read_tx(TXID) of
+											unavailable ->
+												unavailable;
+											TX ->
+												[TX | Acc]
+										end
+								end,
+								[],
+								TXIDs
+							),
+							case TXs of
+								unavailable ->
+									not_found;
+								_ ->
+									BlockOffset = RecallByte - BlockBase,
+									construct_spoa(B, TXs, BlockOffset, TXRoot, Option)
+							end
+					end
 			end
 	end.
 
-generate(B, BlockOffset, Seed, WeaveSize, BI, TXRoot, Option, Limit) ->
-	case B#block.txs of
-		[] ->
-			ar:err([
-				{event, empty_poa_challenge_block},
-				{hash, ar_util:encode(B#block.indep_hash)}
-			]),
-			error;
-		TXIDs ->
-			TXs = lists:foldr(
-				fun
-					(_TXID, unavailable) -> unavailable;
-					(TXID, Acc) ->
-						case ar_storage:read_tx(TXID) of
-							unavailable ->
-								unavailable;
-							TX ->
-								[TX | Acc]
-						end
-				end,
-				[],
-				TXIDs
-			),
-			case TXs of
-				unavailable ->
-					generate(Seed, WeaveSize, BI, Option + 1, Limit);
-				_ ->
-					generate(B, TXs, BlockOffset, Seed, WeaveSize, BI, TXRoot, Option, Limit)
-			end
-	end.
-
-generate(B, TXs, BlockOffset, Seed, WeaveSize, BI, TXRoot, Option, Limit) ->
+construct_spoa(B, TXs, BlockOffset, TXRoot, Option) ->
 	SizeTaggedTXs = ar_block:generate_size_tagged_list_from_txs(TXs),
 	{{TXID, DataRoot}, TXEnd} = find_byte_in_size_tagged_list(BlockOffset, SizeTaggedTXs),
 	{value, TX} = lists:search(
@@ -120,9 +127,10 @@ generate(B, TXs, BlockOffset, Seed, WeaveSize, BI, TXRoot, Option, Limit) ->
 	TXData = get_tx_data(TX),
 	case byte_size(TXData) > 0 of
 		false ->
-			generate(Seed, WeaveSize, BI, Option + 1, Limit);
+			not_found;
 		true ->
-			case create_poa_from_data(B, TXRoot, TXStart, TXData, DataRoot, SizeTaggedTXs, BlockOffset, Option) of
+			case create_poa_from_data(
+					B, TXRoot, TXStart, TXData, DataRoot, SizeTaggedTXs, BlockOffset, Option) of
 				{ok, POA} ->
 					case byte_size(POA#poa.data_path) > ?MAX_PATH_SIZE of
 						true ->
@@ -132,7 +140,7 @@ generate(B, TXs, BlockOffset, Seed, WeaveSize, BI, TXRoot, Option, Limit) ->
 								{tx, ar_util:encode(TX#tx.id)},
 								{limit, ?MAX_PATH_SIZE}
 							]),
-							generate(Seed, WeaveSize, BI, Option + 1, Limit);
+							not_found;
 						false ->
 							case byte_size(POA#poa.tx_path) > ?MAX_PATH_SIZE of
 								true ->
@@ -141,7 +149,8 @@ generate(B, TXs, BlockOffset, Seed, WeaveSize, BI, TXRoot, Option, Limit) ->
 										{block, ar_util:encode(B#block.indep_hash)},
 										{tx, ar_util:encode(TX#tx.id)},
 										{limit, ?MAX_PATH_SIZE}
-									]);
+									]),
+									not_found;
 								false ->
 									POA
 							end
@@ -152,22 +161,21 @@ generate(B, TXs, BlockOffset, Seed, WeaveSize, BI, TXRoot, Option, Limit) ->
 						{block, ar_util:encode(B#block.indep_hash)},
 						{tx, ar_util:encode(TX#tx.id)}
 					]),
-					generate(Seed, WeaveSize, BI, Option + 1, Limit);
+					not_found;
 				{error, invalid_root} ->
 					ar:warn([
 						{event, invalid_transaction_root},
 						{block, ar_util:encode(B#block.indep_hash)},
 						{tx, ar_util:encode(TX#tx.id)}
 					]),
-					generate(Seed, WeaveSize, BI, Option + 1, Limit);
+					not_found;
 				{error, invalid_tx_size} ->
 					ar:warn([
 						{event, invalid_transaction_size},
 						{block, ar_util:encode(B#block.indep_hash)},
 						{tx, ar_util:encode(TX#tx.id)}
 					]),
-					generate(Seed, WeaveSize, BI, Option + 1, Limit)
-
+					not_found
 			end
 	end.
 
@@ -250,6 +258,9 @@ validate(_H, _WS, BI, #poa{ option = Option })
 	false;
 validate(LastIndepHash, WeaveSize, BI, POA) ->
 	RecallByte = calculate_challenge_byte(LastIndepHash, WeaveSize, POA#poa.option),
+	validate(RecallByte, BI, POA).
+
+validate(RecallByte, BI, POA) ->
 	{TXRoot, BlockBase, BlockTop, _BH} = find_challenge_block(RecallByte, BI),
 	validate_tx_path(RecallByte - BlockBase, TXRoot, BlockTop - BlockBase, POA).
 
