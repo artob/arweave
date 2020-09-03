@@ -233,9 +233,6 @@ create_poa_from_data(B, TXStart, TXData, DataRoot, BlockOffset, Option) ->
 			end
 	end.
 
-search(X, [{X, _} | _]) -> 0;
-search(X, [_ | R]) -> 1 + search(X, R).
-
 %% @doc Validate a complete proof of access object.
 validate(_H, 0, _BI, _POA) ->
 	%% The weave does not have data yet.

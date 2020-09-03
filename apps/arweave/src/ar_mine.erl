@@ -479,8 +479,12 @@ server(
 		%% Stop the mining process and all the workers.
 		stop ->
 			stop_miners(Miners),
-			log_performance(TotalHashesTried, StartedAt),
-			ok;
+			case Height + 1 >= ar_fork:height_2_3() of
+				true ->
+					log_spora_performance(TotalSPoRAsTried, StartedAt);
+				false ->
+					log_performance(TotalHashesTried, StartedAt)
+			end;
 		%% The block timestamp must be reasonable fresh since it's going to be
 		%% validated on the remote nodes when it's propagated to them. Only blocks
 		%% with a timestamp close to current time will be accepted in the propagation.
