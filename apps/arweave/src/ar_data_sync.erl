@@ -194,7 +194,7 @@ handle_cast({init, Node}, State) ->
 					sync_record = SyncRecord,
 					block_index = LastStoredBI,
 					disk_pool_size = DiskPoolSize,
-					weave_size = hd(LastStoredBI)
+					weave_size = element(2, hd(LastStoredBI))
 				},
 				case get_intersection(BI, LastStoredBI) of
 					{ok, full_intersection, ExtraBI} ->
