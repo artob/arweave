@@ -210,19 +210,6 @@ create_poa_from_data(B, TXStart, TXData, DataRoot, BlockOffset, Option) ->
 			SizedChunkIDs = ar_tx:sized_chunks_to_sized_chunk_ids(SizedChunks),
 			case ar_merkle:generate_tree(SizedChunkIDs) of
 				{DataRoot, DataTree} ->
-					ar:info(
-						[
-							{event, generated_poa},
-							{weave_size, B#block.weave_size},
-							{block_offset, BlockOffset},
-							{tx_offset, TXOffset},
-							{tx_start, TXStart},
-							{data_root, ar_util:encode(DataRoot)},
-							{chunk_size, byte_size(Chunk)},
-							{chunk_num, search(Chunk, SizedChunks)},
-							{chunk_id, ar_util:encode(ar_tx:generate_chunk_id(Chunk))}
-						]
-					),
 					TXPath =
 						ar_merkle:generate_path(
 							B#block.tx_root,
