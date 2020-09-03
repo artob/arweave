@@ -5,7 +5,7 @@
 	mine/2, mine_spora/2,
 	validate/4, validate/3, validate_spora/8,
 	min_difficulty/1, genesis_difficulty/0, max_difficulty/0,
-	min_spora_difficulty/0,
+	min_spora_difficulty/1,
 	sha384_diff_to_randomx_diff/1,
 	spora_solution_hash/2
 ]).
@@ -109,7 +109,7 @@ validate(BDSHash, Diff, Height) ->
 %% @doc Validate Succinct Proof of Random Access.
 validate_spora(BDS, Nonce, Height, Diff, PrevH, WeaveSize, SPoA, BI) ->
 	RXHash = ar_weave:hash(BDS, Nonce, Height),
-	case validate(RXHash, ?SPORA_SLOW_HASH_DIFF, Height) of
+	case validate(RXHash, ?SPORA_SLOW_HASH_DIFF(Height), Height) of
 		false ->
 			false;
 		true ->
@@ -118,7 +118,7 @@ validate_spora(BDS, Nonce, Height, Diff, PrevH, WeaveSize, SPoA, BI) ->
 				false ->
 					false;
 				true ->
-					case construct_search_space(PrevH, WeaveSize) of
+					case construct_search_space(PrevH, WeaveSize, Height) of
 						empty ->
 							case SPoA == #poa{} of
 								false ->
@@ -152,7 +152,7 @@ min_difficulty(Height) ->
 		true ->
 			case Height >= ar_fork:height_2_3() of
 				true ->
-					min_spora_difficulty();
+					min_spora_difficulty(Height);
 				false ->
 					min_randomx_difficulty()
 			end;
@@ -614,7 +614,7 @@ start_miners(
 					block_index => BI,
 					timestamp => Timestamp,
 					height => Height,
-					search_space => construct_search_space(PrevH, WeaveSize)
+					search_space => construct_search_space(PrevH, WeaveSize, Height)
 				},
 				[spawn(?MODULE, mine_spora, [WorkerState, self()])];
 			false ->
@@ -629,12 +629,20 @@ start_miners(
 		end,
 	S#state{ miners = Miners }.
 
-construct_search_space(_H, WeaveSize)
-		when WeaveSize < ?SPORA_SEARCH_SPACE_SUBSPACES_COUNT * ?SPORA_SEARCH_SUBSPACE_INTERVAL_COUNT ->
+construct_search_space(_H, 0, _Height) ->
 	empty;
-construct_search_space(H, WeaveSize) ->
-	SubspaceSize = WeaveSize div ?SPORA_SEARCH_SPACE_SUBSPACES_COUNT,
-	IntervalSize = SubspaceSize div ?SPORA_SEARCH_SUBSPACE_INTERVAL_COUNT,
+construct_search_space(H, WeaveSize, Height) ->
+	case WeaveSize =< ?SEARCH_SPACE_SIZE(Height) of
+		true ->
+			ar_intervals:add(ar_intervals:new(), WeaveSize, 0);
+		false ->
+			construct_search_space2(H, WeaveSize, Height)
+	end.
+
+construct_search_space2(H, WeaveSize, Height) ->
+	SubspacesCount = ?SPORA_SEARCH_SPACE_SUBSPACES_COUNT(Height),
+	SubspaceSize = WeaveSize div SubspacesCount,
+	IntervalSize = ?SEARCH_SPACE_SIZE(Height) div SubspacesCount,
 	element(2, lists:foldl(
 		fun(Iteration, {CurrentH, SearchSpace}) ->
 			RelativeStart = binary:decode_unsigned(CurrentH, big) rem SubspaceSize,
@@ -656,7 +664,7 @@ construct_search_space(H, WeaveSize) ->
 				end}
 		end,
 		{H, ar_intervals:new()},
-		lists:seq(0, ?SPORA_SEARCH_SPACE_SUBSPACES_COUNT - 1)
+		lists:seq(0, SubspacesCount)
 	)).
 
 %% @doc Stop all workers.
@@ -784,7 +792,7 @@ randomx_hasher(Height) ->
 
 find_rx_hash(Hasher, Nonce, BDS, Height) ->
 	H = Hasher(Nonce, BDS),
-	case validate(H, ?SPORA_SLOW_HASH_DIFF, Height) of
+	case validate(H, ?SPORA_SLOW_HASH_DIFF(Height), Height) of
 		true ->
 			{Nonce, H};
 		false ->
@@ -807,8 +815,8 @@ min_sha384_difficulty() -> 31.
 randomx_genesis_difficulty() -> ?DEFAULT_DIFF.
 -endif.
 
-min_spora_difficulty() ->
-	?SPORA_MIN_DIFFICULTY.
+min_spora_difficulty(Height) ->
+	?SPORA_MIN_DIFFICULTY(Height).
 
 %% Tests
 

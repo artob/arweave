@@ -1440,7 +1440,7 @@ post_block(check_pow, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 		case Height >= ar_fork:height_2_3() of
 			true ->
 				RXHash = ar_weave:hash(BDS, Nonce, Height),
-				case ar_mine:validate(RXHash, ?SPORA_SLOW_HASH_DIFF, Height) of
+				case ar_mine:validate(RXHash, ?SPORA_SLOW_HASH_DIFF(Height), Height) of
 					false ->
 						false;
 					true ->
