@@ -816,7 +816,7 @@ test_basic() ->
 	ar_node:mine(Node),
 	BI = ar_test_node:wait_until_height(Node, 1),
 	B1 = ar_storage:read_block(hd(BI)),
-	start(B1, B1#block.poa, [], unclaimed, [], self(), [], [{B0#block.indep_hash, 0, <<>>}]),
+	start(B1, B1#block.poa, [], unclaimed, [], self(), [], BI),
 	assert_mine_output(B1, B1#block.poa, []).
 
 %% @doc Ensure that the block timestamp gets updated regularly while mining.
@@ -827,13 +827,13 @@ test_timestamp_refresh() ->
 	%% Start mining with a high enough difficulty, so that the block
 	%% timestamp gets refreshed at least once. Since we might be unlucky
 	%% and find the block too fast, we retry until it succeeds.
-	[B0] = ar_weave:init([], ar_retarget:switch_to_linear_diff(20)),
+	[B0] = ar_weave:init([], ar_retarget:switch_to_linear_diff(18)),
 	B = B0,
 	Run = fun(_) ->
 		TXs = [],
 		StartTime = os:system_time(seconds),
 		POA = #poa{},
-		start(B, POA, TXs, unclaimed, [], self(), [], []),
+		start(B, POA, TXs, unclaimed, [], self(), [], [ar_util:block_index_entry_from_block(B0)]),
 		{_, MinedTimestamp} = assert_mine_output(B, POA, TXs),
 		MinedTimestamp > StartTime + ?MINING_TIMESTAMP_REFRESH_INTERVAL
 	end,
@@ -846,13 +846,13 @@ test_excludes_no_longer_valid_txs() ->
 	%% Start mining with a high enough difficulty, so that the block
 	%% timestamp gets refreshed at least once. Since we might be unlucky
 	%% and find the block too fast, we retry until it succeeds.
-	Diff = ar_retarget:switch_to_linear_diff(20),
+	Diff = ar_retarget:switch_to_linear_diff(18),
 	Key = {_, Pub} = ar_wallet:new(),
 	Address = ar_wallet:to_address(Pub),
 	Wallets = [{Address, ?AR(1000000000000), <<>>}],
 	[B] = ar_weave:init(Wallets, Diff),
 	{Node, _} = ar_test_node:start(B),
-	ar_test_node:wait_until_height(Node, 0),
+	BI = ar_test_node:wait_until_height(Node, 0),
 	Run = fun() ->
 		Now = os:system_time(seconds),
 		%% The transaction is invalid because its fee is based on a timestamp from the future.
@@ -865,7 +865,7 @@ test_excludes_no_longer_valid_txs() ->
 			reward => ar_tx:calculate_min_tx_cost(0, Diff, 10, Wallets, <<>>, Now)
 		}),
 		TXs = [ValidTX, InvalidTX],
-		start(B, #poa{}, TXs, unclaimed, [], self(), [{B#block.indep_hash, []}], []),
+		start(B, #poa{}, TXs, unclaimed, [], self(), [{B#block.indep_hash, []}], BI),
 		receive
 			{work_complete, _BH, MinedB, MinedTXs, _BDS, _POA, _} ->
 				{ValidTX, Now, MinedB#block.timestamp, MinedTXs}
@@ -894,9 +894,9 @@ run_until(Pred, Fun) ->
 start_stop_test() ->
 	[B] = ar_weave:init(),
 	{Node, _} = ar_test_node:start(B),
-	ar_test_node:wait_until_height(Node, 0),
+	BI = ar_test_node:wait_until_height(Node, 0),
 	HighDiff = ar_retarget:switch_to_linear_diff(30),
-	PID = start(B#block{ diff = HighDiff }, #poa{}, [], unclaimed, [], self(), [], []),
+	PID = start(B#block{ diff = HighDiff }, #poa{}, [], unclaimed, [], self(), [], BI),
 	timer:sleep(500),
 	assert_alive(PID),
 	stop(PID),
@@ -918,18 +918,20 @@ miner_start_stop_test() ->
 
 assert_mine_output(B, POA, TXs) ->
 	receive
-		{work_complete, BH, NewB, MinedTXs, BDS, POA, _} ->
+		{work_complete, BH, NewB, MinedTXs, BDSOrBDSBase, POA, _} ->
 			?assertEqual(BH, B#block.indep_hash),
 			?assertEqual(lists:sort(TXs), lists:sort(MinedTXs)),
 			BDS = ar_block:generate_block_data_segment(NewB),
 			case NewB#block.height >= ar_fork:height_2_3() of
 				true ->
+					BDSOrBDSBase = ar_block:generate_block_data_segment_base(NewB),
 					?assertEqual(
 						spora_solution_hash(
 							ar_weave:hash(BDS, NewB#block.nonce, B#block.height), POA),
 						NewB#block.hash
 					);
 				false ->
+					BDSOrBDSBase = BDS,
 					?assertEqual(
 						ar_weave:hash(BDS, NewB#block.nonce, B#block.height),
 						NewB#block.hash
