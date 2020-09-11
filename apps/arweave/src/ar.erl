@@ -29,6 +29,7 @@
 	CORE_TEST_MODS,
 	[
 		ar,
+		ar_block_cache,
 		ar_unbalanced_merkle,
 		ar_patricia_tree,
 		ar_diff_dag,
@@ -53,7 +54,7 @@
 		ar_data_sync_tests,
 		ar_poa_tests,
 		ar_node_tests,
-		ar_fork_recovery,
+		ar_fork_recovery_tests,
 		ar_firewall_distributed_tests,
 		ar_firewall,
 		ar_mine,

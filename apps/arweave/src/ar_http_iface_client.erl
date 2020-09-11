@@ -402,8 +402,18 @@ get_tx_from_remote_peer(Peers, TXID) ->
 			get_tx_from_remote_peer(Peers -- [Peer], TXID);
 		gone ->
 			get_tx_from_remote_peer(Peers -- [Peer], TXID);
-		ShouldBeTX ->
-			ShouldBeTX
+		#tx{} = TX ->
+			case ar_tx:verify_tx_id(TXID, TX) of
+				false ->
+					ar:warn([
+						{event, peer_served_invalid_tx},
+						{peer, ar_util:format_peer(Peer)},
+						{tx, ar_util:encode(TXID)}
+					]),
+					get_tx_from_remote_peer(Peers -- [Peer], TXID);
+				true ->
+					TX
+			end
 	end.
 
 %% @doc Retreive only the data associated with a transaction.

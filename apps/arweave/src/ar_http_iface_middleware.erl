@@ -1439,13 +1439,28 @@ post_block(check_pow, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 	MaybeValid =
 		case Height >= ar_fork:height_2_3() of
 			true ->
-				RXHash = ar_weave:hash(BDS, Nonce, Height),
-				case ar_mine:validate(RXHash, ?SPORA_SLOW_HASH_DIFF(Height), Height) of
-					false ->
-						false;
-					true ->
-						SolutionHash = ar_mine:spora_solution_hash(RXHash, BShadow#block.poa),
-						ar_mine:validate(SolutionHash, BShadow#block.diff, Height)
+				Node = whereis(http_entrypoint_node),
+				PrevH = BShadow#block.previous_block,
+				case ar_node:get_block_shadow_from_cache(Node, PrevH) of
+					not_found ->
+						%% We have not seen the previous block yet - might happen if two
+						%% successive blocks are distributed at the same time. Do not
+						%% ban the peer as the block might be valid.
+						{false, {412, #{}, <<>>, Req}};
+					#block{ height = PrevHeight } = PrevB ->
+						UpperBound = ar_node:get_search_space_upper_bound(Node, PrevHeight + 1),
+						case validate_spora_pow(BShadow, PrevB, BDS, UpperBound) of
+							tx_root_not_found ->
+								%% The part of the weave with the given recall byte
+								%% has not been indexed yet. The node should have just
+								%% joined the network. Do not ban the peer as the block
+								%% might be valid.
+								{false, {412, #{}, <<>>, Req}};
+							true ->
+								true;
+							false ->
+								false
+						end
 				end;
 			false ->
 				case ar_mine:validate(BDS, Nonce, BShadow#block.diff, Height) of
@@ -1456,6 +1471,8 @@ post_block(check_pow, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 				end
 		end,
 	case MaybeValid of
+		{false, Response} ->
+			Response;
 		true ->
 			ar_bridge:ignore_id(BDS),
 			post_block(check_timestamp, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp);
@@ -1480,6 +1497,7 @@ post_block(check_timestamp, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 			post_block(post_block, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp)
 	end;
 post_block(post_block, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
+	record_block_pre_validation_time(ReceiveTimestamp),
 	ar:info([{
 		sending_external_block_to_bridge,
 		ar_util:encode(BShadow#block.indep_hash)
@@ -1498,6 +1516,48 @@ post_block(post_block, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 	),
 	{200, #{}, <<"OK">>, Req}.
 
+validate_spora_pow(B, #block{ height = PrevHeight } = PrevB, BDSBase, SearchSpaceUpperBound) ->
+	Root = ar_block:compute_hash_list_merkle(PrevB),
+	Height = B#block.height,
+	case {Root, PrevHeight + 1} == {B#block.hash_list_merkle, Height} of
+		false ->
+			false;
+		true ->
+			Nonce = B#block.nonce,
+			BDS = ar_block:generate_block_data_segment(BDSBase, B),
+			RXHash = ar_weave:hash(BDS, Nonce, Height),
+			case ar_mine:validate(RXHash, ?SPORA_SLOW_HASH_DIFF(Height), Height) of
+				false ->
+					false;
+				true ->
+					SolutionHash = ar_mine:spora_solution_hash(RXHash, B#block.poa),
+					case ar_mine:validate(SolutionHash, B#block.diff, Height) of
+						false ->
+							false;
+						true ->
+							#block{ indep_hash = PrevH } = PrevB,
+							POA = B#block.poa,
+							case ar_mine:pick_recall_byte(
+								RXHash,
+								PrevH,
+								SearchSpaceUpperBound,
+								Height
+							) of
+								{error, weave_size_too_small} ->
+									POA == #poa{};
+								{ok, RecallByte} ->
+									case ar_data_sync:get_tx_root(RecallByte) of
+										not_found ->
+											tx_root_not_found;
+										{ok, TXRoot, BlockBase, BlockSize} ->
+											BlockOffset = RecallByte - BlockBase,
+											ar_poa:validate2(BlockOffset, TXRoot, BlockSize, POA)
+									end
+							end
+					end
+			end
+	end.
+
 post_block_reject_warn(BShadow, Step, Peer) ->
 	ar:warn([
 		{post_block_rejected, ar_util:encode(BShadow#block.indep_hash)},
@@ -1511,6 +1571,10 @@ post_block_reject_warn(BShadow, Step, Peer, Params) ->
 		{Step, Params},
 		{peer, ar_util:format_peer(Peer)}
 	]).
+
+record_block_pre_validation_time(ReceiveTimestamp) ->
+	TimeMs = timer:now_diff(erlang:timestamp(), ReceiveTimestamp) / 1000,
+	prometheus_histogram:observe(block_pre_validation_time, TimeMs).
 
 %% @doc Return the block hash list associated with a block.
 process_request(get_block, [Type, ID, <<"hash_list">>], Req) ->

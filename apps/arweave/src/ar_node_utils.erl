@@ -11,9 +11,7 @@
 	apply_txs/3,
 	update_wallets/4,
 	validate/5,
-	calculate_delay/1,
-	update_block_txs_pairs/3,
-	update_block_index/2
+	calculate_delay/1
 ]).
 
 -include("ar.hrl").
@@ -191,31 +189,6 @@ apply_txs(WalletList, TXs, Height) ->
 		TXs
 	).
 
-update_block_index(B, BI) ->
-	maybe_report_n_confirmations(B, BI),
-	NewBI = [{B#block.indep_hash, B#block.weave_size, B#block.tx_root} | BI],
-	case B#block.height rem ?STORE_BLOCKS_BEHIND_CURRENT of
-		0 ->
-			spawn(fun() -> ar_storage:write_block_index(NewBI) end);
-		_ ->
-			do_nothing
-	end,
-	NewBI.
-
-maybe_report_n_confirmations(B, BI) ->
-	N = 10,
-	LastNBlocks = lists:sublist(BI, N),
-	case length(LastNBlocks) == N of
-		true ->
-			{H, _, _} = lists:last(LastNBlocks),
-			ar_miner_log:block_received_n_confirmations(H, B#block.height - N);
-		false ->
-			do_nothing
-	end.
-
-update_block_txs_pairs(BH, SizeTaggedTXs, BlockTXPairs) ->
-	lists:sublist([{BH, SizeTaggedTXs} | BlockTXPairs], 2 * ?MAX_TX_ANCHOR_DEPTH).
-
 %% @doc Validate a new block, given the previous block, the block index, the wallets of
 %% the source and destination addresses and the reward wallet from the previous block,
 %% and the mapping between block hashes and transaction identifiers of the recent blocks.
@@ -281,7 +254,7 @@ validate_block(previous_block, {BI, NewB, OldB, Wallets, BlockTXPairs}) ->
 					validate_block(poa, {BI, NewB, OldB, Wallets, BlockTXPairs})
 			end
 	end;
-validate_block(spora, {[{_, WeaveSize, _} | _] = BI, NewB, OldB, Wallets, BlockTXPairs}) ->
+validate_block(spora, {BI, NewB, OldB, Wallets, BlockTXPairs}) ->
 	BDS = ar_block:generate_block_data_segment(NewB),
 	#block{
 		nonce = Nonce,
@@ -291,13 +264,17 @@ validate_block(spora, {[{_, WeaveSize, _} | _] = BI, NewB, OldB, Wallets, BlockT
 		poa = POA,
 		hash = Hash
 	} = NewB,
-	case ar_mine:validate_spora(BDS, Nonce, Height, Diff, PrevH, WeaveSize, POA, BI) of
+	UpperBound = ar_mine:get_search_space_upper_bound(BI, Height),
+	case ar_mine:validate_spora(BDS, Nonce, Height, Diff, PrevH, UpperBound, POA, BI) of
 		false ->
 			{invalid, invalid_spora};
 		{true, Hash} ->
 			validate_block(difficulty, {BI, NewB, OldB, Wallets, BlockTXPairs});
 		{true, _} ->
-			{invalid, invalid_spora_hash}
+			{invalid, invalid_spora_hash};
+		true ->
+			%% The weave is small so far, no solution hash yet.
+			validate_block(difficulty, {BI, NewB, OldB, Wallets, BlockTXPairs})
 	end;
 validate_block(poa, {BI, NewB = #block{ poa = POA }, OldB, Wallets, BlockTXPairs}) ->
 	case ar_poa:validate(OldB#block.indep_hash, OldB#block.weave_size, BI, POA) of

@@ -43,3 +43,22 @@ end()).
 			1 % TODO
 	end
 end()).
+
+%% @doc Recall bytes are only picked from the subspace up to the size
+%% of the weave at the block of the depth defined by this constant.
+%% The upper bound is lowered to make the verification of the work not depend
+%% on the verification of the recent weave increments - verifying them implies
+%% fetching and verifying transaction headers. Imagine an attacker crafting an
+%% invalid block with a huge block size. It is then easy for them to craft blocks
+%% on top without accessing any data chunks because almost every new candidate
+%% recall byte would belong to the previous block with an arbitrary transaction root
+%% crafted in advance.
+-define(SEARCH_SPACE_UPPER_BOUND_DEPTH(Height), fun() ->
+	Forks = {
+		ar_fork:height_2_3()
+	},
+	case Forks of
+		{Fork_2_3} when Height >= Fork_2_3 ->
+			50
+	end
+end()).

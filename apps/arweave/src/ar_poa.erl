@@ -4,7 +4,7 @@
 
 -export([
 	generate/1,
-	validate/4, validate/3,
+	validate/4, validate/3, validate2/4,
 	modify_diff/2,
 	get_spoa/3
 ]).
@@ -246,7 +246,7 @@ validate(LastIndepHash, WeaveSize, BI, POA) ->
 
 validate(RecallByte, BI, POA) ->
 	{TXRoot, BlockBase, BlockTop, _BH} = find_challenge_block(RecallByte, BI),
-	validate_tx_path(RecallByte - BlockBase, TXRoot, BlockTop - BlockBase, POA).
+	validate2(RecallByte - BlockBase, TXRoot, BlockTop - BlockBase, POA).
 
 calculate_challenge_byte(_, 0, _) -> 0;
 calculate_challenge_byte(LastIndepHash, WeaveSize, Option) ->
@@ -270,7 +270,7 @@ find_byte_in_size_tagged_list(Byte, [_ | Rest]) ->
 find_byte_in_size_tagged_list(_Byte, []) ->
 	{error, not_found}.
 
-validate_tx_path(BlockOffset, TXRoot, BlockEndOffset, POA) ->
+validate2(BlockOffset, TXRoot, BlockEndOffset, POA) ->
 	Validation =
 		ar_merkle:validate_path(
 			TXRoot,
