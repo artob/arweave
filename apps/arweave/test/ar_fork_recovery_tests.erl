@@ -7,7 +7,7 @@
 	start/1, slave_start/1, connect_to_slave/0, disconnect_from_slave/0,
 	slave_mine/1, mine_until_fork/3,
 	wait_until_height/2, slave_wait_until_height/2,
-	slave_gossip/2, sign_tx/2, slave_add_tx/2, assert_slave_wait_until_receives_txs/2
+	sign_tx/2, slave_add_tx/2, assert_slave_wait_until_receives_txs/2
 ]).
 
 height_plus_one_fork_recovery_test_() ->
@@ -65,14 +65,10 @@ test_missing_txs_fork_recovery() ->
 	[B0] = ar_weave:init([{ar_wallet:to_address(Pub), ?AR(20), <<>>}]),
 	{SlaveNode, _} = slave_start(B0),
 	{MasterNode, _} = start(B0),
-	connect_to_slave(),
-	%% Turn off gossip and add a TX to the slave.
-	slave_gossip(off, SlaveNode),
 	TX1 = sign_tx(Key, #{}),
 	slave_add_tx(SlaveNode, TX1),
 	assert_slave_wait_until_receives_txs(SlaveNode, [TX1]),
-	%% Turn on gossip and mine a block.
-	ar_test_node:slave_gossip(on, SlaveNode),
+	connect_to_slave(),
 	?assertEqual([], ar_node:get_pending_txs(MasterNode)),
 	slave_mine(SlaveNode),
 	wait_until_height(MasterNode, 1).

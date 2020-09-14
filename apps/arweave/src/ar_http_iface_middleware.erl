@@ -1364,7 +1364,7 @@ post_block(read_blockshadow, OrigPeer, {Req, Pid}, ReceiveTimestamp) ->
 							{400, #{}, <<"Invalid block.">>, ReadReq};
 						{ok, {ReqStruct, BShadow}, ReadReq} ->
 							post_block(
-								check_data_segment_processed,
+								extract_data_segment,
 								{ReqStruct, BShadow, OrigPeer},
 								ReadReq,
 								ReceiveTimestamp
@@ -1374,22 +1374,16 @@ post_block(read_blockshadow, OrigPeer, {Req, Pid}, ReceiveTimestamp) ->
 					{413, #{}, <<"Payload too large">>, Req}
 			end
 	end;
-post_block(check_data_segment_processed, {ReqStruct, BShadow, OrigPeer}, Req, ReceiveTimestamp) ->
-	%% Check if block is already known.
+post_block(extract_data_segment, {ReqStruct, BShadow, OrigPeer}, Req, ReceiveTimestamp) ->
 	case lists:keyfind(<<"block_data_segment">>, 1, ReqStruct) of
 		{_, BDSEncoded} ->
 			BDS = ar_util:decode(BDSEncoded),
-			case ar_bridge:is_id_ignored(BDS) of
-				true ->
-					{208, #{}, <<"Block Data Segment already processed.">>, Req};
-				false ->
-					post_block(
-						check_indep_hash_processed,
-						{BShadow, OrigPeer, BDS},
-						Req,
-						ReceiveTimestamp
-					)
-			end;
+			post_block(
+			   check_indep_hash_processed,
+			   {BShadow, OrigPeer, BDS},
+			   Req,
+			   ReceiveTimestamp
+			);
 		false ->
 			post_block_reject_warn(BShadow, block_data_segment_missing, OrigPeer),
 			{400, #{}, <<"block_data_segment missing.">>, Req}
@@ -1400,7 +1394,20 @@ post_block(check_indep_hash_processed, {BShadow, OrigPeer, BDS}, Req, ReceiveTim
 			{208, <<"Block already processed.">>, Req};
 		false ->
 			ar_bridge:ignore_id(BShadow#block.indep_hash),
-			post_block(check_is_joined, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp)
+			post_block(check_indep_hash, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp)
+	end;
+post_block(check_indep_hash, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
+	BH = BShadow#block.indep_hash,
+	case catch compute_hash(BShadow, BDS) of
+		BH ->
+			post_block(check_is_joined, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp);
+		_ ->
+			%% Remove the identifier from the ignore registry. The attacker
+			%% may have put a hash of a valid block inside the invalid one.
+			ar_bridge:unignore_id(BH),
+			post_block_reject_warn(BShadow, check_indep_hash, OrigPeer),
+			ar_blacklist_middleware:ban_peer(OrigPeer, ?BAD_POW_BAN_TIME),
+			{400, #{}, <<"Invalid Block Hash">>, Req}
 	end;
 post_block(check_is_joined, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 	%% Check if node is joined.
@@ -1436,18 +1443,18 @@ post_block(check_difficulty, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 post_block(check_pow, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 	Nonce = BShadow#block.nonce,
 	Height = BShadow#block.height,
+	Node = whereis(http_entrypoint_node),
+	PrevH = BShadow#block.previous_block,
 	MaybeValid =
-		case Height >= ar_fork:height_2_3() of
-			true ->
-				Node = whereis(http_entrypoint_node),
-				PrevH = BShadow#block.previous_block,
-				case ar_node:get_block_shadow_from_cache(Node, PrevH) of
-					not_found ->
-						%% We have not seen the previous block yet - might happen if two
-						%% successive blocks are distributed at the same time. Do not
-						%% ban the peer as the block might be valid.
-						{false, {412, #{}, <<>>, Req}};
-					#block{ height = PrevHeight } = PrevB ->
+		case ar_node:get_block_shadow_from_cache(Node, PrevH) of
+			not_found ->
+				%% We have not seen the previous block yet - might happen if two
+				%% successive blocks are distributed at the same time. Do not
+				%% ban the peer as the block might be valid.
+				{false, {412, #{}, <<>>, Req}};
+			#block{ height = PrevHeight } = PrevB ->
+				case Height >= ar_fork:height_2_3() of
+					true ->
 						UpperBound = ar_node:get_search_space_upper_bound(Node, PrevHeight + 1),
 						case validate_spora_pow(BShadow, PrevB, BDS, UpperBound) of
 							tx_root_not_found ->
@@ -1460,21 +1467,20 @@ post_block(check_pow, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 								true;
 							false ->
 								false
+						end;
+					false ->
+						case ar_mine:validate(BDS, Nonce, BShadow#block.diff, Height) of
+							{invalid, _} ->
+								false;
+							{valid, _} ->
+								true
 						end
-				end;
-			false ->
-				case ar_mine:validate(BDS, Nonce, BShadow#block.diff, Height) of
-					{invalid, _} ->
-						false;
-					{valid, _} ->
-						true
 				end
 		end,
 	case MaybeValid of
 		{false, Response} ->
 			Response;
 		true ->
-			ar_bridge:ignore_id(BDS),
 			post_block(check_timestamp, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp);
 		false ->
 			post_block_reject_warn(BShadow, check_pow, OrigPeer),
@@ -1515,6 +1521,15 @@ post_block(post_block, {BShadow, OrigPeer, BDS}, Req, ReceiveTimestamp) ->
 		ReceiveTimestamp
 	),
 	{200, #{}, <<"OK">>, Req}.
+
+compute_hash(#block{ height = Height } = B, BDSOrBDSBase) ->
+	case Height >= ar_fork:height_2_3() of
+		true ->
+			BDS = ar_block:generate_block_data_segment(BDSOrBDSBase, B),
+			ar_weave:indep_hash_post_fork_2_3(BDS, B#block.hash, B#block.nonce, B#block.poa);
+		false ->
+			ar_weave:indep_hash_post_fork_2_0(BDSOrBDSBase, B#block.hash, B#block.nonce)
+	end.
 
 validate_spora_pow(B, #block{ height = PrevHeight } = PrevB, BDSBase, SearchSpaceUpperBound) ->
 	Root = ar_block:compute_hash_list_merkle(PrevB),

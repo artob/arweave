@@ -439,7 +439,8 @@ apply_block(State, BShadow, [PrevB | _] = PrevBlocks) ->
 				end
 			end;
 		_ ->
-			spawn(fun() -> get_missing_txs_and_retry(BShadow, Mempool, self()) end),
+			Self = self(),
+			spawn(fun() -> get_missing_txs_and_retry(BShadow, Mempool, Self) end),
 			{noreply, State}
 	end.
 
@@ -531,6 +532,7 @@ apply_validated_block(#{ cumulative_diff := CDiff } = State, B, _Blocks, _BI, _B
 	UpdatedBlockCache = ar_block_cache:add_validated(BlockCache, B),
 	gen_server:cast(self(), apply_block),
 	log_applied_block(B),
+	ar_storage:write_full_block(B),
 	Node ! {sync_block_cache, UpdatedBlockCache},
 	State#{ block_cache => UpdatedBlockCache };
 apply_validated_block(State, B, PrevBlocks, BI2, BlockTXPairs2) ->
